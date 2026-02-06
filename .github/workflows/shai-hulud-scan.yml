@@ -13,130 +13,367 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check config file sizes
+      # Phase 1: Malware signatures — strain markers, obfuscation, base64 blobs
+      - name: "Phase 1: Check for malware signatures"
         run: |
-          echo "=== Checking config file sizes (max 5KB) ==="
+          echo "=== Phase 1: Checking for Shai-Hulud malware signatures ==="
           FAILED=0
-          CONFIG_PATTERNS="*.config.js *.config.ts *.config.mjs *.config.cjs tailwind.config.* vite.config.* webpack.config.* rollup.config.* postcss.config.* babel.config.* jest.config.* vitest.config.* next.config.* nuxt.config.* .eslintrc.js .prettierrc.js .babelrc.js tsconfig.json .eslintrc.json prettier.config.*"
-          for pattern in $CONFIG_PATTERNS; do
-            while IFS= read -r file; do
-              [ -z "$file" ] && continue
-              size=$(wc -c < "$file")
-              if [ "$size" -gt 5120 ]; then
-                echo "::error file=$file::Config file exceeds 5KB ($size bytes): $file"
+
+          # Known malware strain identifiers
+          STRAINS="global\.i='5-3-247' global\.i='5-3-267' global\.i='5-228' global\.i='5-3-238' global\.i='5-143'"
+
+          # Directories to exclude
+          EXCLUDE="--exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor --exclude-dir=.pnpm --exclude-dir=dist --exclude-dir=build"
+          INCLUDE="--include=*.js --include=*.ts --include=*.mjs --include=*.cjs --include=*.mts --include=*.cts"
+
+          # Check known strains
+          for strain in $STRAINS; do
+            files=$(grep -rlE "$strain" . $INCLUDE $EXCLUDE 2>/dev/null || true)
+            if [ -n "$files" ]; then
+              while IFS= read -r file; do
+                echo "::error file=$file::MALWARE DETECTED — Known Shai-Hulud strain: $strain in $file"
                 FAILED=1
-              fi
-            done < <(find . -name "$pattern" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
+              done <<< "$files"
+            fi
           done
-          if [ "$FAILED" -eq 1 ]; then
-            echo "::error::One or more config files exceed the 5KB size limit"
-            exit 1
-          fi
-          echo "All config files within size limits"
 
-      - name: Check for long lines in config files
-        run: |
-          echo "=== Checking for lines >500 chars in JS/TS config files ==="
-          FAILED=0
-          CONFIG_PATTERNS="*.config.js *.config.ts *.config.mjs *.config.cjs .eslintrc.js .prettierrc.js .babelrc.js prettier.config.js prettier.config.cjs"
-          for pattern in $CONFIG_PATTERNS; do
+          # Generic global.i pattern (catches new strains)
+          files=$(grep -rlE "global\.i=['\"][0-9]+-[0-9]+-?[0-9]*['\"]" . $INCLUDE $EXCLUDE 2>/dev/null || true)
+          if [ -n "$files" ]; then
             while IFS= read -r file; do
-              [ -z "$file" ] && continue
-              line_num=0
-              while IFS= read -r line; do
-                line_num=$((line_num + 1))
-                if [ "${#line}" -gt 500 ]; then
-                  echo "::error file=$file,line=$line_num::Line exceeds 500 chars (${#line} chars) in $file:$line_num"
-                  FAILED=1
-                fi
-              done < "$file"
-            done < <(find . -name "$pattern" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
-          done
+              sig=$(grep -oE "global\.i=['\"][0-9]+-[0-9]+-?[0-9]*['\"]" "$file" 2>/dev/null | head -1)
+              echo "::error file=$file::MALWARE DETECTED — Shai-Hulud signature pattern: $sig"
+              FAILED=1
+            done <<< "$files"
+          fi
+
+          # eval+atob obfuscation (base64-encoded payload execution)
+          files=$(grep -rlE 'eval\(.*atob\(' . $INCLUDE $EXCLUDE 2>/dev/null || true)
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              echo "::error file=$file::OBFUSCATED MALWARE — eval+atob pattern in $file"
+              FAILED=1
+            done <<< "$files"
+          fi
+
+          # eval+global[ obfuscation (obfuscated global access)
+          files=$(grep -rlE 'eval\(.*global\[' . $INCLUDE $EXCLUDE 2>/dev/null || true)
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              echo "::error file=$file::OBFUSCATED MALWARE — eval+global[ pattern in $file"
+              FAILED=1
+            done <<< "$files"
+          fi
+
+          # global['_V'] variant strain marker
+          files=$(grep -rlE "global\[['\"]_V['\"]\]" . $INCLUDE $EXCLUDE 2>/dev/null || true)
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              echo "::error file=$file::MALWARE VARIANT — global['_V'] pattern in $file"
+              FAILED=1
+            done <<< "$files"
+          fi
+
+          # global['r']=require hijacking
+          files=$(grep -rlE "global\[['\"]r['\"]\]=require" . $INCLUDE $EXCLUDE 2>/dev/null || true)
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              echo "::error file=$file::MALWARE — require hijacking (global['r']=require) in $file"
+              FAILED=1
+            done <<< "$files"
+          fi
+
+          # Large base64 blobs (200+ chars) — encoded payload delivery
+          files=$(grep -rlE '[A-Za-z0-9+/]{200,}={0,2}' . $INCLUDE $EXCLUDE 2>/dev/null || true)
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              echo "::error file=$file::SUSPICIOUS — Large base64 blob (200+ chars) in $file"
+              FAILED=1
+            done <<< "$files"
+          fi
+
           if [ "$FAILED" -eq 1 ]; then
-            echo "::error::One or more config files contain suspiciously long lines"
+            echo "::error::MALWARE SIGNATURES DETECTED — Do not merge!"
             exit 1
           fi
-          echo "No suspicious long lines found"
+          echo "No malware signatures found"
 
-      - name: Check for whitespace obfuscation
+      # Phase 2: Whitespace obfuscation — hidden code after 50+ spaces
+      - name: "Phase 2: Check for whitespace obfuscation"
         run: |
-          echo "=== Checking for whitespace obfuscation (50+ consecutive spaces between code) ==="
+          echo "=== Phase 2: Checking for whitespace obfuscation (50+ consecutive spaces between code) ==="
           FAILED=0
-          PATTERN='[^ ]{1} {50,}[^ ]{1}'
+
           while IFS= read -r file; do
             [ -z "$file" ] && continue
-            if grep -Pn '.{1}\s{50,}.{1}' "$file" > /dev/null 2>&1; then
-              matches=$(grep -Pn '.{1}\s{50,}.{1}' "$file" 2>/dev/null)
-              echo "::error file=$file::Whitespace obfuscation detected in $file"
+            if grep -Pn '[^\s]\s{50,}[^\s]' "$file" > /dev/null 2>&1; then
+              matches=$(grep -Pn '[^\s]\s{50,}[^\s]' "$file" 2>/dev/null)
+              echo "::error file=$file::WHITESPACE OBFUSCATION — Hidden content detected in $file"
               echo "$matches" | head -3
               FAILED=1
             fi
-          done < <(find . \( -name "*.js" -o -name "*.ts" -o -name "*.mjs" -o -name "*.cjs" \) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
+          done < <(find . \( -name "*.js" -o -name "*.ts" -o -name "*.mjs" -o -name "*.cjs" -o -name "*.mts" -o -name "*.cts" \) \
+            -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" \
+            -not -path "*/.pnpm/*" -not -path "*/dist/*" -not -path "*/build/*" \
+            -not -name "*.min.js" -not -name "*.bundle.js" 2>/dev/null)
+
           if [ "$FAILED" -eq 1 ]; then
-            echo "::error::Whitespace obfuscation detected - possible supply chain attack"
+            echo "::error::Whitespace obfuscation detected — possible supply chain attack"
             exit 1
           fi
           echo "No whitespace obfuscation found"
 
-      - name: Check for malware signatures
+      # Phase 3: Suspicious config files — size and long-line analysis
+      - name: "Phase 3: Check config file sizes and long lines"
         run: |
-          echo "=== Checking for Shai-Hulud malware signatures ==="
+          echo "=== Phase 3: Checking config files for suspicious size and long lines ==="
           FAILED=0
-          # Known malware strain identifiers
-          STRAINS="global\.i='5-3-247' global\.i='5-3-267' global\.i='5-228' global\.i='5-3-238' global\.i='5-143'"
 
-          while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            # Check known strains
-            for strain in $STRAINS; do
-              if grep -q "$strain" "$file" 2>/dev/null; then
-                echo "::error file=$file::MALWARE DETECTED - Known Shai-Hulud strain found: $strain in $file"
+          CONFIG_PATTERNS="*.config.js *.config.ts *.config.mjs *.config.cjs tailwind.config.* vite.config.* webpack.config.* rollup.config.* postcss.config.* babel.config.* jest.config.* vitest.config.* next.config.* nuxt.config.* eslint.config.* prettier.config.* .eslintrc.js .prettierrc.js .babelrc.js tsconfig.json .eslintrc.json"
+
+          for pattern in $CONFIG_PATTERNS; do
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+
+              # Check size (>8KB is suspicious for config files)
+              size=$(wc -c < "$file")
+              if [ "$size" -gt 8192 ]; then
+                echo "::error file=$file::SUSPICIOUS — Config file $file is $size bytes (normal configs are <1KB)"
                 FAILED=1
               fi
-            done
-            # Check generic global.i pattern (catches new strains)
-            if grep -Pq "global\.i=['\"][0-9]+-[0-9]+-?[0-9]*['\"]" "$file" 2>/dev/null; then
-              echo "::error file=$file::MALWARE DETECTED - Shai-Hulud signature pattern found in $file"
-              FAILED=1
-            fi
-            # Check eval+atob obfuscation (base64-encoded payload execution)
-            if grep -Pq 'eval\(.*atob\(' "$file" 2>/dev/null; then
-              echo "::error file=$file::OBFUSCATED MALWARE DETECTED - eval+atob pattern found in $file"
-              FAILED=1
-            fi
-            # Check global['_V'] variant strain marker
-            if grep -Pq "global\[['\"]_V['\"]\]" "$file" 2>/dev/null; then
-              echo "::error file=$file::MALWARE VARIANT DETECTED - global['_V'] pattern found in $file"
-              FAILED=1
-            fi
-            # Check global['r']=require hijacking
-            if grep -Pq "global\[['\"]r['\"]\]=require" "$file" 2>/dev/null; then
-              echo "::error file=$file::MALWARE DETECTED - require hijacking pattern found in $file"
-              FAILED=1
-            fi
-            # Check known payload filenames being referenced
-            if grep -qE "(setup_bun|bun_environment|set_bun)\.js" "$file" 2>/dev/null; then
-              echo "::error file=$file::Suspicious payload reference found in $file"
-              FAILED=1
-            fi
-            # Check for behavioral indicators
-            if grep -qE "(SHA1HULUD|Shai-Hulud|webhook\.site)" "$file" 2>/dev/null; then
-              echo "::error file=$file::Known malware indicator found in $file"
-              FAILED=1
-            fi
-          done < <(find . \( -name "*.js" -o -name "*.ts" -o -name "*.mjs" -o -name "*.cjs" \) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
 
-          # Also check package.json files for suspicious scripts
-          while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            if grep -qE '"(preinstall|postinstall|prepare)".*"(setup_bun|set_bun|bun\.sh)" ' "$file" 2>/dev/null; then
-              echo "::error file=$file::Suspicious install script in $file"
-              FAILED=1
-            fi
-          done < <(find . -name "package.json" -not -path "*/node_modules/*" -not -path "*/.git/*" 2>/dev/null)
+              # Check for long lines (>256 chars)
+              line_num=0
+              while IFS= read -r line; do
+                line_num=$((line_num + 1))
+                if [ "${#line}" -gt 256 ]; then
+                  echo "::error file=$file,line=$line_num::SUSPICIOUS — Line $line_num is ${#line} chars in $file"
+                  FAILED=1
+                  break  # One finding per file is enough
+                fi
+              done < "$file"
+
+            done < <(find . -name "$pattern" \
+              -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" \
+              -not -path "*/.pnpm/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
+          done
 
           if [ "$FAILED" -eq 1 ]; then
-            echo "::error::MALWARE SIGNATURES DETECTED - Do not merge!"
+            echo "::error::Suspicious config files detected"
             exit 1
           fi
-          echo "No malware signatures found"
+          echo "All config files within normal parameters"
+
+      # Phase 4: Known payload files — filename + SHA256 hash verification
+      - name: "Phase 4: Check for known payload files"
+        run: |
+          echo "=== Phase 4: Checking for known Shai-Hulud payload files ==="
+          FAILED=0
+
+          # Known payload filenames
+          PAYLOAD_FILES="setup_bun.js bun_environment.js set_bun.js bundle.js"
+
+          # Known SHA256 hashes of confirmed payloads
+          KNOWN_HASHES="46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09
+          62ee164b9b306250c1172583f138c9614139264f889fa99614903c12755468d0
+          f099c5d9ec417d4445a0328ac0ada9cde79fc37410914103ae9c609cbc0ee068
+          cbb9bc5a8496243e02f3cc080efbe3e4a1430ba0671f2e43a202bf45b05479cd
+          a3894003ad1d293ba96d77881ccd2071446dc3f65f434669b49b3da92421901a"
+
+          for payload_name in $PAYLOAD_FILES; do
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+
+              echo "::warning file=$file::Known payload filename found: $file"
+
+              # Verify SHA256 hash
+              file_hash=$(sha256sum "$file" | awk '{print $1}')
+              if echo "$KNOWN_HASHES" | grep -q "$file_hash"; then
+                echo "::error file=$file::CONFIRMED MALWARE — SHA256 match: $file_hash (known Shai-Hulud payload)"
+                FAILED=1
+              else
+                echo "::warning file=$file::Payload filename match but hash not in known list: $file_hash"
+                FAILED=1
+              fi
+            done < <(find . -name "$payload_name" \
+              -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" \
+              -not -path "*/.pnpm/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
+          done
+
+          # Also check for references to payload filenames in other files
+          files=$(grep -rlE "(setup_bun|bun_environment|set_bun)\.js" . \
+            --include="*.js" --include="*.ts" --include="*.mjs" --include="*.cjs" --include="*.mts" --include="*.cts" \
+            --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor --exclude-dir=.pnpm --exclude-dir=dist --exclude-dir=build \
+            2>/dev/null || true)
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              echo "::error file=$file::SUSPICIOUS — References known payload filename in $file"
+              FAILED=1
+            done <<< "$files"
+          fi
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::Known payload files detected"
+            exit 1
+          fi
+          echo "No known payload files found"
+
+      # Phase 5: Package.json scripts — suspicious lifecycle hooks
+      - name: "Phase 5: Check package.json for suspicious scripts"
+        run: |
+          echo "=== Phase 5: Checking package.json files for suspicious lifecycle scripts ==="
+          FAILED=0
+
+          # Patterns that indicate malware in lifecycle scripts
+          SUSPICIOUS_PATTERNS="setup_bun|set_bun|bun_environment|bun\.sh/install|curl.*bun\.sh"
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+
+            # Extract lifecycle scripts using python3
+            scripts=$(python3 -c "
+          import sys, json
+          try:
+              pkg = json.load(open('$file'))
+              scripts = pkg.get('scripts', {})
+              for key in ['preinstall', 'postinstall', 'prepare', 'prepublish', 'prepack']:
+                  if key in scripts:
+                      print(f'{key}: {scripts[key]}')
+          except: pass
+          " 2>/dev/null || true)
+
+            [ -z "$scripts" ] && continue
+
+            # Check for known malware patterns
+            if echo "$scripts" | grep -qE "$SUSPICIOUS_PATTERNS" 2>/dev/null; then
+              matched=$(echo "$scripts" | grep -E "$SUSPICIOUS_PATTERNS" | head -1)
+              echo "::error file=$file::SUSPICIOUS SCRIPT — $matched"
+              FAILED=1
+            fi
+
+            # Flag lifecycle scripts that run node directly (unusual)
+            if echo "$scripts" | grep -qE '(preinstall|postinstall):.*node\s+' 2>/dev/null; then
+              matched=$(echo "$scripts" | grep -E '(preinstall|postinstall):.*node\s+' | head -1)
+              echo "::warning file=$file::Lifecycle script runs node directly: $matched"
+              FAILED=1
+            fi
+
+          done < <(find . -name "package.json" \
+            -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" \
+            -not -path "*/.pnpm/*" 2>/dev/null)
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::Suspicious package.json scripts detected"
+            exit 1
+          fi
+          echo "No suspicious package.json scripts found"
+
+      # Phase 6: Behavioral indicators — exfiltration, credential theft, runner hijacking
+      - name: "Phase 6: Check for behavioral indicators"
+        run: |
+          echo "=== Phase 6: Checking for Shai-Hulud behavioral indicators ==="
+          FAILED=0
+
+          EXCLUDE="--exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor --exclude-dir=.pnpm --exclude-dir=dist --exclude-dir=build"
+
+          # Each pattern and its description
+          declare -A PATTERNS
+          PATTERNS=(
+            ["trufflehog filesystem"]="TruffleHog credential scanner execution"
+            ["SHA1HULUD"]="Shai-Hulud runner name (uppercase)"
+            ["SHA1Hulud"]="Shai-Hulud runner name (mixed case)"
+            ["Sha1-Hulud"]="Shai-Hulud variant name"
+            ["webhook\.site"]="Data exfiltration endpoint"
+            ["actions/runner/releases/download"]="GitHub Actions runner binary download"
+            ["Runner\.Listener"]="GitHub runner listener process"
+            ["--name SHA1"]="Runner registration with suspicious name"
+            ["az account get-access-token"]="Azure CLI token theft"
+            ["azd auth token"]="Azure Developer CLI token theft"
+          )
+
+          for pattern in "${!PATTERNS[@]}"; do
+            description="${PATTERNS[$pattern]}"
+            files=$(grep -rlE "$pattern" . $EXCLUDE \
+              --include="*.js" --include="*.ts" --include="*.mjs" --include="*.cjs" --include="*.mts" --include="*.cts" \
+              --include="*.sh" --include="*.yml" --include="*.yaml" --include="*.json" \
+              2>/dev/null || true)
+
+            if [ -n "$files" ]; then
+              while IFS= read -r file; do
+                [ -z "$file" ] && continue
+                # Skip scanner files, docs, and markdown
+                [[ "$file" == *"detect-config-malware"* ]] && continue
+                [[ "$file" == *"scan-all-repos"* ]] && continue
+                [[ "$file" == *"shai-hulud-scan"* ]] && continue
+                [[ "$file" == *"purge-malware"* ]] && continue
+                [[ "$file" == *".md" ]] && continue
+                [[ "$file" == *"README"* ]] && continue
+
+                echo "::error file=$file::BEHAVIORAL INDICATOR — $description in $file"
+                FAILED=1
+              done <<< "$files"
+            fi
+          done
+
+          # Also check for Shai-Hulud name (skip self-references in scanner/docs)
+          files=$(grep -rlE "Shai-Hulud" . $EXCLUDE \
+            --include="*.js" --include="*.ts" --include="*.mjs" --include="*.cjs" \
+            2>/dev/null || true)
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              [[ "$file" == *"detect-config-malware"* ]] && continue
+              [[ "$file" == *"scan-all-repos"* ]] && continue
+              [[ "$file" == *"shai-hulud-scan"* ]] && continue
+              [[ "$file" == *"purge-malware"* ]] && continue
+              echo "::error file=$file::BEHAVIORAL INDICATOR — Shai-Hulud reference in $file"
+              FAILED=1
+            done <<< "$files"
+          fi
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::Behavioral indicators detected — possible active compromise"
+            exit 1
+          fi
+          echo "No behavioral indicators found"
+
+      # Phase 7: Large JS files — Shai-Hulud payloads can be 9MB+
+      - name: "Phase 7: Check for abnormally large JS files"
+        run: |
+          echo "=== Phase 7: Checking for abnormally large JS files (>5MB) ==="
+          FAILED=0
+
+          # Known SHA256 hashes for hash verification
+          KNOWN_HASHES="46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09
+          62ee164b9b306250c1172583f138c9614139264f889fa99614903c12755468d0
+          f099c5d9ec417d4445a0328ac0ada9cde79fc37410914103ae9c609cbc0ee068
+          cbb9bc5a8496243e02f3cc080efbe3e4a1430ba0671f2e43a202bf45b05479cd
+          a3894003ad1d293ba96d77881ccd2071446dc3f65f434669b49b3da92421901a"
+
+          THRESHOLD=5000000  # 5MB
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            size=$(wc -c < "$file")
+            if [ "$size" -gt "$THRESHOLD" ]; then
+              size_mb=$(echo "scale=1; $size / 1048576" | bc 2>/dev/null || echo "?")
+              echo "::error file=$file::LARGE JS FILE — $file is ${size_mb}MB (Shai-Hulud payloads can be 9MB+)"
+
+              # Check hash against known payloads
+              file_hash=$(sha256sum "$file" | awk '{print $1}')
+              if echo "$KNOWN_HASHES" | grep -q "$file_hash"; then
+                echo "::error file=$file::CONFIRMED MALWARE — SHA256 match: $file_hash"
+              fi
+
+              FAILED=1
+            fi
+          done < <(find . \( -name "*.js" -o -name "*.ts" -o -name "*.mjs" -o -name "*.cjs" -o -name "*.mts" -o -name "*.cts" \) \
+            -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" \
+            -not -path "*/.pnpm/*" -not -path "*/dist/*" -not -path "*/build/*" \
+            -not -name "*.min.js" -not -name "*.bundle.js" 2>/dev/null)
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::Abnormally large JS files detected"
+            exit 1
+          fi
+          echo "No abnormally large JS files found"

@@ -11,8 +11,9 @@ Detect and clean the **Shai-Hulud supply chain attack** — a self-replicating w
 | [**detect-config-malware.sh**](#detect-config-malwaresh--git-repo-scanner) | Bash | Static (git history) | 7-phase deep audit of git repos across all branches with cleanup mode |
 | [**purge-malware-from-history.sh**](#purge-malware-from-historysh--git-history-rewriter) | Bash | Git rewrite | Strip malware payloads from every commit in git history |
 | [**scan-all-repos.sh**](#scan-all-repossh--multi-repo-orchestration) | Bash | Multi-repo orchestration | Auto-discover and scan all your GitHub repos |
+| [**shai-hulud-scan.yml**](#shai-hulud-scanyml--github-actions-workflow) | GitHub Actions | CI/CD gate | Block PRs and pushes containing malware signatures or whitespace obfuscation |
 
-**Recommended workflow:** sandworm for fast triage, bash scanner for deep git audit, sandtrace to safely execute and analyze anything flagged.
+**Recommended workflow:** sandworm for fast triage, bash scanner for deep git audit, sandtrace to safely execute and analyze anything flagged. Add the GitHub Actions workflow to prevent reinfection via PRs.
 
 ---
 
@@ -275,39 +276,6 @@ All developers must re-pull after cleanup. Commits made on top of infected histo
 8. `git grep` for behavioral indicators across all file types
 9. `git ls-tree -l` for large JS file detection with hash verification
 
-### GitHub Actions Workflow
-
-A lightweight GitHub Actions workflow is included for server-side enforcement. It runs on pull requests and pushes to protected branches, checking for:
-
-1. Config file size (>5KB)
-2. Long lines (>500 chars) in JS/TS config files
-3. Whitespace obfuscation (50+ consecutive spaces)
-4. Malware signatures (strain markers, eval+atob, global['_V'], require hijacking, payload references, behavioral indicators)
-
-#### Install on a repo
-
-Copy the workflow file to your repo:
-
-```bash
-mkdir -p .github/workflows
-cp /path/to/shai-hulud-scanner/.github/workflows/shai-hulud-scan.yml .github/workflows/
-git add .github/workflows/shai-hulud-scan.yml
-git commit -m "ci: add Shai-Hulud supply chain security scan"
-git push
-```
-
-#### Install across an entire GitHub org
-
-Use the GitHub Contents API to push the workflow to all repos at once:
-
-```bash
-CONTENT=$(base64 -w 0 .github/workflows/shai-hulud-scan.yml)
-gh api --method PUT "repos/YOUR_ORG/REPO_NAME/contents/.github/workflows/shai-hulud-scan.yml" \
-  -f message="ci: add Shai-Hulud supply chain security scan" \
-  -f content="$CONTENT" \
-  -f branch="main"
-```
-
 ---
 
 ## purge-malware-from-history.sh — Git History Rewriter
@@ -384,6 +352,56 @@ Copy `repos-to-scan.example.conf` to `repos-to-scan.conf` and edit to match your
 
 ---
 
+## shai-hulud-scan.yml — GitHub Actions Workflow
+
+A drop-in GitHub Actions workflow that blocks PRs and pushes containing Shai-Hulud malware. Runs all 7 detection phases from the bash scanner — no dependencies, no external actions, runs in under 30 seconds.
+
+### What It Checks
+
+| Phase | What it catches |
+|-------|----------------|
+| 1. Malware signatures | 5 known strains (`global.i=`), generic catch-all, `eval+atob`, `eval+global[`, `global['_V']`, require hijacking, large base64 blobs (200+ chars) |
+| 2. Whitespace obfuscation | 50+ consecutive spaces hiding code off-screen in JS/TS files |
+| 3. Config file analysis | Config files over 8KB, lines over 256 chars (thresholds match bash scanner) |
+| 4. Known payload files | `setup_bun.js`, `bun_environment.js`, `set_bun.js`, `bundle.js` with SHA256 hash verification against 5 confirmed payloads |
+| 5. Package.json scripts | `preinstall`/`postinstall`/`prepare`/`prepublish`/`prepack` hooks referencing `setup_bun`, `bun.sh/install`, `curl.*bun.sh`; lifecycle scripts running `node` directly |
+| 6. Behavioral indicators | `trufflehog filesystem`, `SHA1HULUD`/`SHA1Hulud`/`Sha1-Hulud`, `webhook.site`, Actions runner download/registration, Azure token theft (`az account get-access-token`, `azd auth token`) |
+| 7. Large JS files | JS/TS files over 5MB (Shai-Hulud payloads can be 9MB+) with SHA256 verification |
+
+### Triggers
+
+Runs on:
+- **All pull requests** (any branch)
+- **Pushes** to `main`, `master`, `stage`, `staging`, `production`, `develop`
+
+### Install on a repo
+
+```bash
+mkdir -p .github/workflows
+cp /path/to/shai-hulud-scanner/.github/workflows/shai-hulud-scan.yml .github/workflows/
+git add .github/workflows/shai-hulud-scan.yml
+git commit -m "ci: add Shai-Hulud supply chain security scan"
+git push
+```
+
+Or copy the file directly from this repo's `.github/workflows/shai-hulud-scan.yml`.
+
+### Install across an entire GitHub org
+
+Use the GitHub Contents API to push the workflow to all repos at once:
+
+```bash
+CONTENT=$(base64 -w 0 .github/workflows/shai-hulud-scan.yml)
+
+# Repeat for each repo, or loop over `gh repo list --json name -q '.[].name'`
+gh api --method PUT "repos/YOUR_ORG/REPO_NAME/contents/.github/workflows/shai-hulud-scan.yml" \
+  -f message="ci: add Shai-Hulud supply chain security scan" \
+  -f content="$CONTENT" \
+  -f branch="main"
+```
+
+---
+
 ## Reference
 
 ### Known Shai-Hulud Strains
@@ -434,8 +452,8 @@ Newer payloads avoid direct `global.i=` by using:
 | `detect-config-malware.sh` | Core scanner — single repo, 7-phase detection + cleanup mode |
 | `purge-malware-from-history.sh` | Rewrite git history to remove embedded malware from all commits |
 | `scan-all-repos.sh` | Multi-repo orchestrator with GitHub auto-discovery |
+| `.github/workflows/shai-hulud-scan.yml` | GitHub Actions workflow — drop into any repo to block malware PRs |
 | `repos-to-scan.example.conf` | Example config for manual repo list (fallback mode) |
-| `.github/workflows/shai-hulud-scan.yml` | GitHub Actions workflow for server-side enforcement |
 
 ## Contributing
 
