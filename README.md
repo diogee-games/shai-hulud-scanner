@@ -15,7 +15,11 @@ Shai-Hulud is a supply chain attack that injects malicious code into JavaScript/
 ## What This Scanner Detects
 
 ### Phase 1: Malware Signatures
-Known strain IDs embedded in payloads: `global.i='5-3-247'`, `'5-3-267'`, `'5-228'`, `'5-3-238'`, `'5-143'`, plus generic pattern matching for new strains.
+Known strain IDs embedded in payloads: `global.i='5-3-247'`, `'5-3-267'`, `'5-228'`, `'5-3-238'`, `'5-143'`, plus generic pattern matching for new strains. Also detects obfuscated variants:
+- `eval(..atob(..))` — base64-encoded payload execution
+- `global['_V']` — variant strain marker used to bypass `global.i` detection
+- `global['r']=require` — require hijacking for module access
+- Large base64 blobs (200+ chars) — encoded malware payloads
 
 ### Phase 2: Whitespace Obfuscation
 JS/TS files with 50+ consecutive spaces hiding code off-screen — the primary injection technique.
@@ -178,6 +182,13 @@ Copy `repos-to-scan.example.conf` to `repos-to-scan.conf` and edit to match your
 | 5-3-267 | Wave 2 — re-infection during cleanup |
 | 5-143 | Later discovery |
 
+### Obfuscation Variants
+
+Newer payloads avoid direct `global.i=` by using:
+- `eval("global['_V']='5-3-238';"+atob('...'))` — strain marker inside eval, payload base64-encoded
+- Hundreds of spaces after legitimate code to push the payload off-screen
+- `global['r']=require` to hijack the require function without a searchable pattern
+
 ## Known Payload Hashes (SHA256)
 
 | Hash | File |
@@ -198,6 +209,39 @@ Copy `repos-to-scan.example.conf` to `repos-to-scan.conf` and edit to match your
 6. **Review package.json** — check for suspicious preinstall/postinstall scripts
 7. **Re-scan after cleanup** to verify
 
+## GitHub Actions Workflow
+
+A lightweight GitHub Actions workflow is included for server-side enforcement. It runs on pull requests and pushes to protected branches, checking for:
+
+1. Config file size (>5KB)
+2. Long lines (>500 chars) in JS/TS config files
+3. Whitespace obfuscation (50+ consecutive spaces)
+4. Malware signatures (strain markers, eval+atob, global['_V'], require hijacking, payload references, behavioral indicators)
+
+### Install on a repo
+
+Copy the workflow file to your repo:
+
+```bash
+mkdir -p .github/workflows
+cp /path/to/shai-hulud-scanner/.github/workflows/shai-hulud-scan.yml .github/workflows/
+git add .github/workflows/shai-hulud-scan.yml
+git commit -m "ci: add Shai-Hulud supply chain security scan"
+git push
+```
+
+### Install across an entire GitHub org
+
+Use the GitHub Contents API to push the workflow to all repos at once:
+
+```bash
+CONTENT=$(base64 -w 0 .github/workflows/shai-hulud-scan.yml)
+gh api --method PUT "repos/YOUR_ORG/REPO_NAME/contents/.github/workflows/shai-hulud-scan.yml" \
+  -f message="ci: add Shai-Hulud supply chain security scan" \
+  -f content="$CONTENT" \
+  -f branch="main"
+```
+
 ## Files
 
 | File | Purpose |
@@ -205,6 +249,7 @@ Copy `repos-to-scan.example.conf` to `repos-to-scan.conf` and edit to match your
 | `detect-config-malware.sh` | Core scanner — single repo, 7-phase detection + cleanup mode |
 | `scan-all-repos.sh` | Multi-repo orchestrator with GitHub auto-discovery |
 | `repos-to-scan.example.conf` | Example config for manual repo list (fallback mode) |
+| `.github/workflows/shai-hulud-scan.yml` | GitHub Actions workflow for server-side enforcement |
 
 ## Contributing
 
