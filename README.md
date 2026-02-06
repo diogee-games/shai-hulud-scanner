@@ -244,6 +244,12 @@ gh api --method PUT "repos/YOUR_ORG/REPO_NAME/contents/.github/workflows/shai-hu
 
 ## sandworm — Rust Filesystem Scanner
 
+<p align="center">
+  <img src="sandworm/logo.svg" alt="sandworm logo" width="320">
+  <br>
+  <em>The worm finds what hides.</em>
+</p>
+
 `sandworm` is a fast, parallel Rust tool that scans entire filesystems for whitespace obfuscation — the signature technique used by Shai-Hulud to hide malicious payloads off-screen behind thousands of spaces.
 
 While the bash scripts above are git-aware and scan repositories branch-by-branch, sandworm takes a different approach: it sweeps every file under a directory tree (defaulting to `$HOME`), flagging any file with abnormally long runs of consecutive whitespace. This makes it useful for catching infections outside of git repos — in `node_modules`, build artifacts, cached files, or anywhere malware might land.
@@ -291,15 +297,131 @@ sandworm uses [rayon](https://docs.rs/rayon) for parallel file scanning and the 
 
 Run sandworm first for a fast triage, then use the bash scanner for deep per-repo analysis on anything suspicious.
 
+## sandtrace — Malware Sandbox with Syscall Tracing
+
+<p align="center">
+  <img src="sandtrace/sandtrace.jpg" alt="sandtrace" width="320">
+  <br>
+  <em>No escape without a trace.</em>
+</p>
+
+`sandtrace` is a Rust-based malware sandbox that combines ptrace syscall tracing, Landlock filesystem restriction, seccomp-bpf syscall filtering, and Linux namespaces for safely analyzing untrusted binaries. It provides structured JSONL output and colored terminal display.
+
+While sandworm detects malware signatures on disk and the bash scanner audits git history, sandtrace takes the next step: **run the suspicious binary and observe exactly what it does** — every file it opens, every network connection it attempts, every process it spawns — all within an isolated sandbox that prevents real damage.
+
+### Security Layers
+
+sandtrace applies 8 independent defense-in-depth layers:
+
+| Layer | Protection |
+|-------|-----------|
+| User namespace | UID/GID isolation |
+| Mount namespace | Minimal filesystem (tmpfs /tmp, private /dev, remounted /proc) |
+| PID namespace | Host process hiding |
+| IPC/UTS/Cgroup namespaces | Full isolation from host IPC, hostname, cgroups |
+| Network namespace | No network by default (loopback only) |
+| Landlock LSM | Kernel-level filesystem access control |
+| seccomp-bpf | Dangerous syscall blocking + W^X enforcement |
+| ptrace | Real-time syscall tracing and policy enforcement |
+| rlimits | Resource limits (max processes, file size, open files) |
+
+### Build
+
+```bash
+cd sandtrace
+cargo build --release
+# Binary: sandtrace/target/release/sandtrace (2.3MB static binary)
+```
+
+### Usage
+
+```bash
+# Trace what a binary does (no enforcement, just observe)
+./sandtrace/target/release/sandtrace run --trace-only -vv ./suspicious_binary
+
+# Full sandbox — deny everything except standard libraries
+./sandtrace/target/release/sandtrace run ./suspicious_binary
+
+# Allow network + specific paths, log to file
+./sandtrace/target/release/sandtrace run --allow-net --allow-path ./project -o trace.jsonl npm install
+
+# Use a custom policy file
+./sandtrace/target/release/sandtrace run --policy sandtrace/examples/strict.toml ./untrusted_elf
+
+# Audit npm install with tailored policy
+./sandtrace/target/release/sandtrace run --policy sandtrace/examples/npm_audit.toml npm install
+```
+
+### JSONL Output
+
+Every syscall is logged as structured JSON, parseable by `jq`, Python, or any SIEM:
+
+```json
+{"event_type":"syscall","pid":12345,"syscall":"openat","args":{"decoded":{"path":"/home/user/.ssh/id_rsa","flags":"O_RDONLY"}},"action":"deny","return_value":-1}
+```
+
+A summary is emitted at the end of each trace:
+
+```json
+{
+  "event_type": "summary",
+  "total_syscalls": 4523,
+  "denied_count": 3,
+  "files_accessed": ["/etc/passwd", "/usr/lib/libnode.so"],
+  "files_created": ["/tmp/payload.bin"],
+  "files_deleted": [],
+  "network_attempts": ["connect 93.184.216.34:443"],
+  "suspicious_activity": ["Attempted to read /home/user/.ssh/id_rsa"]
+}
+```
+
+### Policy Files (TOML)
+
+Three example policies are included in `sandtrace/examples/`:
+
+| Policy | Use Case |
+|--------|----------|
+| `strict.toml` | Maximum lockdown — read-only standard libs, no network, no exec |
+| `permissive.toml` | Observe everything, block only truly dangerous syscalls |
+| `npm_audit.toml` | Audit `npm install` — allow network + node_modules writes, deny SSH/env access |
+
+### How it complements sandworm and the bash scanner
+
+| | `detect-config-malware.sh` | `sandworm` | `sandtrace` |
+|---|---|---|---|
+| Language | Bash | Rust | Rust |
+| Approach | Static (git history) | Static (filesystem) | Dynamic (runtime) |
+| Detection | 7-phase signatures | Whitespace obfuscation | Syscall behavior |
+| Isolation | None (read-only scan) | None (read-only scan) | Full sandbox (namespaces, seccomp, Landlock) |
+| Use case | Deep repo audit | Quick broad sweep | Run and analyze suspicious binaries |
+
+**Recommended workflow:** sandworm for fast triage, bash scanner for deep git audit, sandtrace to safely execute and analyze anything flagged.
+
+## purge-malware-from-history.sh — Git History Rewriter
+
+Removes Shai-Hulud malware payloads from **every commit in git history** using `git-filter-repo`. The malware hides after legitimate code on a line, separated by 50+ spaces — this script strips the payload while preserving the clean code.
+
+```bash
+# Dry-run: show what would change
+./purge-malware-from-history.sh /path/to/infected-repo
+
+# Actually rewrite history
+./purge-malware-from-history.sh /path/to/infected-repo --execute
+```
+
+Requires `git-filter-repo` (`pip3 install git-filter-repo`). Creates a tar backup before rewriting, restores remotes after, verifies with the scanner, and prompts for force-push.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `detect-config-malware.sh` | Core scanner — single repo, 7-phase detection + cleanup mode |
 | `scan-all-repos.sh` | Multi-repo orchestrator with GitHub auto-discovery |
+| `purge-malware-from-history.sh` | Rewrite git history to remove embedded malware from all commits |
 | `repos-to-scan.example.conf` | Example config for manual repo list (fallback mode) |
 | `.github/workflows/shai-hulud-scan.yml` | GitHub Actions workflow for server-side enforcement |
 | `sandworm/` | Rust filesystem scanner — fast parallel whitespace obfuscation detection |
+| `sandtrace/` | Rust malware sandbox — syscall tracing + enforcement with 8-layer isolation |
 
 ## Contributing
 
