@@ -1,0 +1,11 @@
+[package]
+name = "sandworm"
+version = "0.1.0"
+edition = "2024"
+description = "Scan filesystems for whitespace obfuscation — the Shai-Hulud supply chain attack's signature technique"
+
+[dependencies]
+ignore = "0.4"
+regex = "1"
+rayon = "1.10"
+clap = { version = "4", features = ["derive"] }
