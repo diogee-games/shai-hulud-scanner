@@ -377,13 +377,15 @@ A summary is emitted at the end of each trace:
 
 ### Policy Files (TOML)
 
-Three example policies are included in `sandtrace/examples/`:
+Five example policies are included in `sandtrace/examples/`:
 
 | Policy | Use Case |
 |--------|----------|
 | `strict.toml` | Maximum lockdown — read-only standard libs, no network, no exec |
 | `permissive.toml` | Observe everything, block only truly dangerous syscalls |
 | `npm_audit.toml` | Audit `npm install` — allow network + node_modules writes, deny SSH/env access |
+| `pnpm_audit.toml` | Audit `pnpm install` — same as npm but with pnpm paths/lockfile |
+| `composer_audit.toml` | Audit `composer install` — allow network + vendor writes, permit php/git exec |
 
 ### How it complements sandworm and the bash scanner
 
