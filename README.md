@@ -242,6 +242,55 @@ gh api --method PUT "repos/YOUR_ORG/REPO_NAME/contents/.github/workflows/shai-hu
   -f branch="main"
 ```
 
+## sandworm — Rust Filesystem Scanner
+
+`sandworm` is a fast, parallel Rust tool that scans entire filesystems for whitespace obfuscation — the signature technique used by Shai-Hulud to hide malicious payloads off-screen behind thousands of spaces.
+
+While the bash scripts above are git-aware and scan repositories branch-by-branch, sandworm takes a different approach: it sweeps every file under a directory tree (defaulting to `$HOME`), flagging any file with abnormally long runs of consecutive whitespace. This makes it useful for catching infections outside of git repos — in `node_modules`, build artifacts, cached files, or anywhere malware might land.
+
+### Build
+
+```bash
+cd sandworm
+cargo build --release
+# Binary: sandworm/target/release/sandworm
+```
+
+### Usage
+
+```bash
+# Scan home directory (default, 50+ whitespace chars)
+./sandworm/target/release/sandworm
+
+# Scan a specific directory
+./sandworm/target/release/sandworm /path/to/project
+
+# Raise threshold to reduce noise (1000+ chars catches real obfuscation)
+./sandworm/target/release/sandworm -n 1000
+
+# Show line previews for each finding
+./sandworm/target/release/sandworm -n 1000 -v
+
+# Custom max file size (default 10MB)
+./sandworm/target/release/sandworm --max-size 50000000
+```
+
+### Performance
+
+sandworm uses [rayon](https://docs.rs/rayon) for parallel file scanning and the [ignore](https://docs.rs/ignore) crate for fast directory traversal. It skips `node_modules`, `.git`, `vendor`, and other junk directories automatically. Typical performance: **440,000+ files in ~1-2 seconds**.
+
+### How it complements the bash scanner
+
+| | `detect-config-malware.sh` | `sandworm` |
+|---|---|---|
+| Language | Bash | Rust |
+| Scope | Git repos (all branches) | Any directory tree |
+| Detection | 7-phase (signatures, hashes, behavioral) | Whitespace obfuscation |
+| Speed | Minutes per repo (fetches, per-branch) | Seconds for entire filesystem |
+| Use case | Deep repo audit | Quick broad sweep |
+
+Run sandworm first for a fast triage, then use the bash scanner for deep per-repo analysis on anything suspicious.
+
 ## Files
 
 | File | Purpose |
@@ -250,6 +299,7 @@ gh api --method PUT "repos/YOUR_ORG/REPO_NAME/contents/.github/workflows/shai-hu
 | `scan-all-repos.sh` | Multi-repo orchestrator with GitHub auto-discovery |
 | `repos-to-scan.example.conf` | Example config for manual repo list (fallback mode) |
 | `.github/workflows/shai-hulud-scan.yml` | GitHub Actions workflow for server-side enforcement |
+| `sandworm/` | Rust filesystem scanner — fast parallel whitespace obfuscation detection |
 
 ## Contributing
 

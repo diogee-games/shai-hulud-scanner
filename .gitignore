@@ -1,2 +1,7 @@
 repos-to-scan.conf
 *.log
+
+
+# Added by cargo
+/target
+/sandworm/target
