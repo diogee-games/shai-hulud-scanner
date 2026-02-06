@@ -1,0 +1,142 @@
+name: Shai-Hulud Supply Chain Scan
+
+on:
+  pull_request:
+    branches: ['**']
+  push:
+    branches: [main, master, stage, staging, production, develop]
+
+jobs:
+  supply-chain-scan:
+    name: Supply Chain Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check config file sizes
+        run: |
+          echo "=== Checking config file sizes (max 5KB) ==="
+          FAILED=0
+          CONFIG_PATTERNS="*.config.js *.config.ts *.config.mjs *.config.cjs tailwind.config.* vite.config.* webpack.config.* rollup.config.* postcss.config.* babel.config.* jest.config.* vitest.config.* next.config.* nuxt.config.* .eslintrc.js .prettierrc.js .babelrc.js tsconfig.json .eslintrc.json prettier.config.*"
+          for pattern in $CONFIG_PATTERNS; do
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              size=$(wc -c < "$file")
+              if [ "$size" -gt 5120 ]; then
+                echo "::error file=$file::Config file exceeds 5KB ($size bytes): $file"
+                FAILED=1
+              fi
+            done < <(find . -name "$pattern" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::One or more config files exceed the 5KB size limit"
+            exit 1
+          fi
+          echo "All config files within size limits"
+
+      - name: Check for long lines in config files
+        run: |
+          echo "=== Checking for lines >500 chars in JS/TS config files ==="
+          FAILED=0
+          CONFIG_PATTERNS="*.config.js *.config.ts *.config.mjs *.config.cjs .eslintrc.js .prettierrc.js .babelrc.js prettier.config.js prettier.config.cjs"
+          for pattern in $CONFIG_PATTERNS; do
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              line_num=0
+              while IFS= read -r line; do
+                line_num=$((line_num + 1))
+                if [ "${#line}" -gt 500 ]; then
+                  echo "::error file=$file,line=$line_num::Line exceeds 500 chars (${#line} chars) in $file:$line_num"
+                  FAILED=1
+                fi
+              done < "$file"
+            done < <(find . -name "$pattern" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::One or more config files contain suspiciously long lines"
+            exit 1
+          fi
+          echo "No suspicious long lines found"
+
+      - name: Check for whitespace obfuscation
+        run: |
+          echo "=== Checking for whitespace obfuscation (50+ consecutive spaces between code) ==="
+          FAILED=0
+          PATTERN='[^ ]{1} {50,}[^ ]{1}'
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            if grep -Pn '.{1}\s{50,}.{1}' "$file" > /dev/null 2>&1; then
+              matches=$(grep -Pn '.{1}\s{50,}.{1}' "$file" 2>/dev/null)
+              echo "::error file=$file::Whitespace obfuscation detected in $file"
+              echo "$matches" | head -3
+              FAILED=1
+            fi
+          done < <(find . \( -name "*.js" -o -name "*.ts" -o -name "*.mjs" -o -name "*.cjs" \) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::Whitespace obfuscation detected - possible supply chain attack"
+            exit 1
+          fi
+          echo "No whitespace obfuscation found"
+
+      - name: Check for malware signatures
+        run: |
+          echo "=== Checking for Shai-Hulud malware signatures ==="
+          FAILED=0
+          # Known malware strain identifiers
+          STRAINS="global\.i='5-3-247' global\.i='5-3-267' global\.i='5-228' global\.i='5-3-238' global\.i='5-143'"
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            # Check known strains
+            for strain in $STRAINS; do
+              if grep -q "$strain" "$file" 2>/dev/null; then
+                echo "::error file=$file::MALWARE DETECTED - Known Shai-Hulud strain found: $strain in $file"
+                FAILED=1
+              fi
+            done
+            # Check generic global.i pattern (catches new strains)
+            if grep -Pq "global\.i=['\"][0-9]+-[0-9]+-?[0-9]*['\"]" "$file" 2>/dev/null; then
+              echo "::error file=$file::MALWARE DETECTED - Shai-Hulud signature pattern found in $file"
+              FAILED=1
+            fi
+            # Check eval+atob obfuscation (base64-encoded payload execution)
+            if grep -Pq 'eval\(.*atob\(' "$file" 2>/dev/null; then
+              echo "::error file=$file::OBFUSCATED MALWARE DETECTED - eval+atob pattern found in $file"
+              FAILED=1
+            fi
+            # Check global['_V'] variant strain marker
+            if grep -Pq "global\[['\"]_V['\"]\]" "$file" 2>/dev/null; then
+              echo "::error file=$file::MALWARE VARIANT DETECTED - global['_V'] pattern found in $file"
+              FAILED=1
+            fi
+            # Check global['r']=require hijacking
+            if grep -Pq "global\[['\"]r['\"]\]=require" "$file" 2>/dev/null; then
+              echo "::error file=$file::MALWARE DETECTED - require hijacking pattern found in $file"
+              FAILED=1
+            fi
+            # Check known payload filenames being referenced
+            if grep -qE "(setup_bun|bun_environment|set_bun)\.js" "$file" 2>/dev/null; then
+              echo "::error file=$file::Suspicious payload reference found in $file"
+              FAILED=1
+            fi
+            # Check for behavioral indicators
+            if grep -qE "(SHA1HULUD|Shai-Hulud|webhook\.site)" "$file" 2>/dev/null; then
+              echo "::error file=$file::Known malware indicator found in $file"
+              FAILED=1
+            fi
+          done < <(find . \( -name "*.js" -o -name "*.ts" -o -name "*.mjs" -o -name "*.cjs" \) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/dist/*" -not -path "*/build/*" 2>/dev/null)
+
+          # Also check package.json files for suspicious scripts
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            if grep -qE '"(preinstall|postinstall|prepare)".*"(setup_bun|set_bun|bun\.sh)" ' "$file" 2>/dev/null; then
+              echo "::error file=$file::Suspicious install script in $file"
+              FAILED=1
+            fi
+          done < <(find . -name "package.json" -not -path "*/node_modules/*" -not -path "*/.git/*" 2>/dev/null)
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::MALWARE SIGNATURES DETECTED - Do not merge!"
+            exit 1
+          fi
+          echo "No malware signatures found"
