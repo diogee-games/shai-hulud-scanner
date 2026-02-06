@@ -4,4 +4,5 @@ repos-to-scan.conf
 
 # Added by cargo
 /target
+/sandtrace/target
 /sandworm/target
