@@ -6,8 +6,8 @@ Detect and clean the **Shai-Hulud supply chain attack** — a self-replicating w
 
 | Tool | Language | Approach | What it does |
 |------|----------|----------|-------------|
-| [**sandtrace**](#sandtrace--malware-sandbox-with-syscall-tracing) | Rust | Dynamic (runtime sandbox) | Run suspicious binaries in an 8-layer sandbox, trace every syscall, log to JSONL |
-| [**sandworm**](#sandworm--rust-filesystem-scanner) | Rust | Static (filesystem sweep) | Fast parallel scan for whitespace obfuscation across entire directory trees |
+| [**sandtrace**](https://github.com/diogee-games/sandtrace) | Rust | Dynamic (runtime sandbox) | Run suspicious binaries in an 8-layer sandbox, trace every syscall, log to JSONL |
+| [**sandworm**](https://github.com/diogee-games/sandworm) | Rust | Static (filesystem sweep) | Fast parallel scan for whitespace obfuscation across entire directory trees |
 | [**detect-config-malware.sh**](#detect-config-malwaresh--git-repo-scanner) | Bash | Static (git history) | 7-phase deep audit of git repos across all branches with cleanup mode |
 | [**purge-malware-from-history.sh**](#purge-malware-from-historysh--git-history-rewriter) | Bash | Git rewrite | Strip malware payloads from every commit in git history |
 | [**scan-all-repos.sh**](#scan-all-repossh--multi-repo-orchestration) | Bash | Multi-repo orchestration | Auto-discover and scan all your GitHub repos |
@@ -29,142 +29,21 @@ Shai-Hulud is a supply chain attack that injects malicious code into JavaScript/
 
 ---
 
-## sandtrace — Malware Sandbox with Syscall Tracing
+## Companion Rust Tools
 
-<p align="center">
-  <img src="sandtrace/logo.svg" alt="sandtrace logo" width="320">
-  <br>
-  <em>No escape without a trace.</em>
-</p>
+The Rust-based tools have been moved to their own repositories for independent development and releases:
 
-`sandtrace` is a Rust-based malware sandbox that combines ptrace syscall tracing, Landlock filesystem restriction, seccomp-bpf syscall filtering, and Linux namespaces for safely analyzing untrusted binaries. It provides structured JSONL output and colored terminal display.
+### sandtrace — Malware Sandbox with Syscall Tracing
 
-While sandworm detects malware signatures on disk and the bash scanner audits git history, sandtrace takes the next step: **run the suspicious binary and observe exactly what it does** — every file it opens, every network connection it attempts, every process it spawns — all within an isolated sandbox that prevents real damage.
+**Repo:** [github.com/diogee-games/sandtrace](https://github.com/diogee-games/sandtrace)
 
-### Security Layers
+Rust-based malware sandbox combining ptrace syscall tracing, Landlock filesystem restriction, seccomp-bpf syscall filtering, and Linux namespaces. 8 independent defense-in-depth layers for safely analyzing untrusted binaries with structured JSONL output.
 
-sandtrace applies 8 independent defense-in-depth layers:
+### sandworm — Rust Filesystem Scanner
 
-| Layer | Protection |
-|-------|-----------|
-| User namespace | UID/GID isolation |
-| Mount namespace | Minimal filesystem (tmpfs /tmp, private /dev, remounted /proc) |
-| PID namespace | Host process hiding |
-| IPC/UTS/Cgroup namespaces | Full isolation from host IPC, hostname, cgroups |
-| Network namespace | No network by default (loopback only) |
-| Landlock LSM | Kernel-level filesystem access control |
-| seccomp-bpf | Dangerous syscall blocking + W^X enforcement |
-| ptrace | Real-time syscall tracing and policy enforcement |
-| rlimits | Resource limits (max processes, file size, open files) |
+**Repo:** [github.com/diogee-games/sandworm](https://github.com/diogee-games/sandworm)
 
-### Build
-
-```bash
-cd sandtrace
-cargo build --release
-# Binary: sandtrace/target/release/sandtrace (2.3MB static binary)
-```
-
-### Usage
-
-```bash
-# Trace what a binary does (no enforcement, just observe)
-./sandtrace/target/release/sandtrace run --trace-only -vv ./suspicious_binary
-
-# Full sandbox — deny everything except standard libraries
-./sandtrace/target/release/sandtrace run ./suspicious_binary
-
-# Allow network + specific paths, log to file
-./sandtrace/target/release/sandtrace run --allow-net --allow-path ./project -o trace.jsonl npm install
-
-# Use a custom policy file
-./sandtrace/target/release/sandtrace run --policy sandtrace/examples/strict.toml ./untrusted_elf
-
-# Audit npm install with tailored policy
-./sandtrace/target/release/sandtrace run --policy sandtrace/examples/npm_audit.toml npm install
-```
-
-### JSONL Output
-
-Every syscall is logged as structured JSON, parseable by `jq`, Python, or any SIEM:
-
-```json
-{"event_type":"syscall","pid":12345,"syscall":"openat","args":{"decoded":{"path":"/home/user/.ssh/id_rsa","flags":"O_RDONLY"}},"action":"deny","return_value":-1}
-```
-
-A summary is emitted at the end of each trace:
-
-```json
-{
-  "event_type": "summary",
-  "total_syscalls": 4523,
-  "denied_count": 3,
-  "files_accessed": ["/etc/passwd", "/usr/lib/libnode.so"],
-  "files_created": ["/tmp/payload.bin"],
-  "files_deleted": [],
-  "network_attempts": ["connect 93.184.216.34:443"],
-  "suspicious_activity": ["Attempted to read /home/user/.ssh/id_rsa"]
-}
-```
-
-### Policy Files (TOML)
-
-Five example policies are included in `sandtrace/examples/`:
-
-| Policy | Use Case |
-|--------|----------|
-| `strict.toml` | Maximum lockdown — read-only standard libs, no network, no exec |
-| `permissive.toml` | Observe everything, block only truly dangerous syscalls |
-| `npm_audit.toml` | Audit `npm install` — allow network + node_modules writes, deny SSH/env access |
-| `pnpm_audit.toml` | Audit `pnpm install` — same as npm but with pnpm paths/lockfile |
-| `composer_audit.toml` | Audit `composer install` — allow network + vendor writes, permit php/git exec |
-
-See [sandtrace/README.md](sandtrace/README.md) for full CLI reference, package manager auditing examples, and security architecture details.
-
----
-
-## sandworm — Rust Filesystem Scanner
-
-<p align="center">
-  <img src="sandworm/logo.svg" alt="sandworm logo" width="320">
-  <br>
-  <em>The worm finds what hides.</em>
-</p>
-
-`sandworm` is a fast, parallel Rust tool that scans entire filesystems for whitespace obfuscation — the signature technique used by Shai-Hulud to hide malicious payloads off-screen behind thousands of spaces.
-
-While the bash scripts above are git-aware and scan repositories branch-by-branch, sandworm takes a different approach: it sweeps every file under a directory tree (defaulting to `$HOME`), flagging any file with abnormally long runs of consecutive whitespace. This makes it useful for catching infections outside of git repos — in `node_modules`, build artifacts, cached files, or anywhere malware might land.
-
-### Build
-
-```bash
-cd sandworm
-cargo build --release
-# Binary: sandworm/target/release/sandworm
-```
-
-### Usage
-
-```bash
-# Scan home directory (default, 50+ whitespace chars)
-./sandworm/target/release/sandworm
-
-# Scan a specific directory
-./sandworm/target/release/sandworm /path/to/project
-
-# Raise threshold to reduce noise (1000+ chars catches real obfuscation)
-./sandworm/target/release/sandworm -n 1000
-
-# Show line previews for each finding
-./sandworm/target/release/sandworm -n 1000 -v
-
-# Custom max file size (default 10MB)
-./sandworm/target/release/sandworm --max-size 50000000
-```
-
-### Performance
-
-sandworm uses [rayon](https://docs.rs/rayon) for parallel file scanning and the [ignore](https://docs.rs/ignore) crate for fast directory traversal. It skips `node_modules`, `.git`, `vendor`, and other junk directories automatically. Typical performance: **440,000+ files in ~1-2 seconds**.
+Fast parallel filesystem scanner for whitespace obfuscation detection. Sweeps entire directory trees at 440,000+ files/sec using rayon, flagging files where malicious code hides behind thousands of spaces.
 
 ---
 
@@ -447,13 +326,18 @@ Newer payloads avoid direct `global.i=` by using:
 
 | File | Purpose |
 |------|---------|
-| `sandtrace/` | Rust malware sandbox — syscall tracing + enforcement with 8-layer isolation |
-| `sandworm/` | Rust filesystem scanner — fast parallel whitespace obfuscation detection |
 | `detect-config-malware.sh` | Core scanner — single repo, 7-phase detection + cleanup mode |
 | `purge-malware-from-history.sh` | Rewrite git history to remove embedded malware from all commits |
 | `scan-all-repos.sh` | Multi-repo orchestrator with GitHub auto-discovery |
 | `.github/workflows/shai-hulud-scan.yml` | GitHub Actions workflow — drop into any repo to block malware PRs |
 | `repos-to-scan.example.conf` | Example config for manual repo list (fallback mode) |
+
+## Related Repositories
+
+| Repo | Description |
+|------|-------------|
+| [sandtrace](https://github.com/diogee-games/sandtrace) | Rust malware sandbox — syscall tracing + enforcement with 8-layer isolation |
+| [sandworm](https://github.com/diogee-games/sandworm) | Rust filesystem scanner — fast parallel whitespace obfuscation detection |
 
 ## Contributing
 
